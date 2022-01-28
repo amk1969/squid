@@ -412,12 +412,18 @@ struct router_view_t {
 
 /// \interface WCCPv2_Protocol
 struct wccp2_cache_list_t {
+    wccp2_cache_list_t() {
+        memset(&cache_ip, 0, sizeof(cache_ip));
+    }
+    ~wccp2_cache_list_t() {
+        delete next;
+    }
 
     struct in_addr cache_ip;
 
-    int weight;
+    int weight = 0;
 
-    struct wccp2_cache_list_t *next;
+    struct wccp2_cache_list_t *next = nullptr;
 };
 
 /// \interface WCCPv2_Protocol
@@ -1077,16 +1083,9 @@ wccp2ConnectionClose(void)
 
     while (service_list_ptr != NULL) {
         for (router_list_ptr = &service_list_ptr->router_list_head; router_list_ptr != NULL; router_list_ptr = router_list_next) {
-            for (cache_list_ptr = &router_list_ptr->cache_list_head; cache_list_ptr; cache_list_ptr = cache_list_ptr_next) {
-                cache_list_ptr_next = cache_list_ptr->next;
 
-                if (cache_list_ptr != &router_list_ptr->cache_list_head) {
-                    xfree(cache_list_ptr);
-                } else {
-
-                    memset(cache_list_ptr, '\0', sizeof(struct wccp2_cache_list_t));
-                }
-            }
+            delete router_list_ptr->cache_list_head.next;
+            memset(&router_list_ptr->cache_list_head, '\0', sizeof(struct wccp2_cache_list_t));
 
             router_list_next = router_list_ptr->next;
 
@@ -1179,10 +1178,6 @@ wccp2HandleUdp(int sock, void *)
 
     struct wccp2_router_list_t *router_list_ptr;
 
-    struct wccp2_cache_list_t *cache_list_ptr;
-
-    struct wccp2_cache_list_t *cache_list_ptr_next;
-
     /* These structs form the parts of the packet */
 
     struct wccp2_security_none_t *security_info = NULL;
@@ -1193,12 +1188,6 @@ wccp2HandleUdp(int sock, void *)
 
     struct router_view_t *router_view_header = NULL;
 
-    struct wccp2_cache_mask_identity_info_t *cache_mask_identity = NULL;
-
-    struct cache_mask_info_t *cache_mask_info = NULL;
-
-    struct wccp2_cache_identity_info_t *cache_identity = NULL;
-
     struct wccp2_capability_info_header_t *router_capability_header = NULL;
     char *router_capability_data_start = nullptr;
 
@@ -1206,10 +1195,8 @@ wccp2HandleUdp(int sock, void *)
 
     struct sockaddr_in from;
 
-    struct in_addr cache_address;
     uint32_t tmp;
     char *ptr;
-    unsigned int num_caches;
 
     debugs(80, 6, "wccp2HandleUdp: Called.");
 
@@ -1428,25 +1415,6 @@ wccp2HandleUdp(int sock, void *)
             }
         }
 
-        debugs(80, 5, "Cleaning out cache list");
-        /* clean out the old cache list */
-
-        for (cache_list_ptr = &router_list_ptr->cache_list_head; cache_list_ptr; cache_list_ptr = cache_list_ptr_next) {
-            cache_list_ptr_next = cache_list_ptr->next;
-
-            if (cache_list_ptr != &router_list_ptr->cache_list_head) {
-                xfree(cache_list_ptr);
-            }
-        }
-
-        router_list_ptr->num_caches = htonl(0);
-        num_caches = 0;
-
-        /* Check to see if we're the master cache and update the cache list */
-        bool found = false;
-        service_list_ptr->lowest_ip = 1;
-        cache_list_ptr = &router_list_ptr->cache_list_head;
-
         /* to find the list of caches, we start at the end of the router view header */
 
         ptr = (char *) (router_view_header) + sizeof(struct router_view_t);
@@ -1473,102 +1441,105 @@ wccp2HandleUdp(int sock, void *)
         const uint32_t cacheCount = ntohl(*cacheCountRaw);
         ptr += sizeof(*cacheCountRaw);
 
+        // generate the new list of caches (before updating our state)
+        std::unique_ptr<struct wccp2_cache_list_t> cache_list_ptr;
+        bool new_lowest_ip = false;
+        unsigned int num_caches = 0;
+        bool found = false;
+
         if (cacheCount != 0) {
             /* search through the list of received-from ip addresses */
-
             for (num_caches = 0; num_caches < cacheCount; ++num_caches) {
-                /* Get a copy of the ip */
-                memset(&cache_address, 0, sizeof(cache_address)); // Make GCC happy
 
+                std::unique_ptr<struct wccp2_cache_list_t> tmpEntry;
+                tmpEntry.reset(new wccp2_cache_list_t);
+
+                struct wccp2_cache_identity_info_t *cache_identity = nullptr;
+                struct cache_mask_info_t *cache_mask_info = nullptr;
                 switch (Config.Wccp2.assignment_method) {
 
                 case WCCP2_ASSIGNMENT_METHOD_HASH:
-
                     SetField(cache_identity, ptr, router_view_header, router_view_size,
                              "malformed packet (truncated router view info cache w/o assignment hash)");
-
                     if (cache_identity->bits & 6 >> 1 != 0) {
-                        fatalf("Assignment type mismatch in router view");
+                        throw TextException("Assignment type mismatch in router view", Here());
                     }
 
                     ptr += sizeof(struct wccp2_cache_identity_info_t);
-
-                    memcpy(&cache_address, &cache_identity->addr, sizeof(struct in_addr));
-
-                    cache_list_ptr->weight = ntohs(cache_identity->weight);
+                    tmpEntry->weight = ntohs(cache_identity->weight);
+                    memcpy(&tmpEntry->cache_ip, &cache_identity->addr, sizeof(struct in_addr));
                     break;
 
                 case WCCP2_ASSIGNMENT_METHOD_MASK:
-
                     SetField(cache_mask_info, ptr, router_view_header, router_view_size,
                              "malformed packet (truncated router view info cache w/o assignment mask)");
                     if (cache_mask_info->bits & 6 >> 1 != 1) {
-                        fatalf("Assignment type mismatch in router view");
+                        throw TextException("assignment type mismatch in router view", Here());
                     }
 
                     if (ntohl(cache_mask_info->mask_element_count) == 0) {
 
                         ptr += sizeof(struct cache_mask_info_t);
-                        cache_list_ptr->weight = ntohs(cache_mask_info->weight);
+                        tmpEntry->weight = ntohs(cache_mask_info->weight);
+                        memcpy(&tmpEntry->cache_ip, &cache_mask_info->addr, sizeof(struct in_addr));
 
                     } else if (ntohl(cache_mask_info->mask_element_count) == 1 ) {
-                        cache_mask_identity = reinterpret_cast<wccp2_cache_mask_identity_info_t*>(cache_mask_info);
+                        auto *cache_mask_identity = reinterpret_cast<wccp2_cache_mask_identity_info_t*>(cache_mask_info);
                         if (ntohl(cache_mask_identity->mask.number_values) == 0) {
                             // Need to set entire field
                             SetField(cache_mask_identity, ptr, router_view_header, router_view_size,
-                                     "malformed packet (truncated router view info cache w/o assignment mask identity)");
+                                     "malformed packet (truncated router view info cache mask)");
 
                             ptr += sizeof(struct wccp2_cache_mask_identity_info_t);
+                            tmpEntry->weight = ntohs(cache_mask_identity->weight);
+                            memcpy(&tmpEntry->cache_ip, &cache_mask_info->addr, sizeof(struct in_addr));
 
-                            cache_list_ptr->weight = ntohs(cache_mask_identity->weight);
                         } else {
-                            fatalf("Unexpected cache assignment info number of mask values received\n");
+                            throw TextException("unexpected cache assignment info number of mask values received", Here());
                         }
 
                     } else {
-
-                        fatalf("Unexpected mask cache assignment info element count received\n");
+                        throw TextException("unexpected mask cache assignment info element count received", Here());
                     }
-
-                    emcpy(&cache_address, &cache_mask_info->addr, sizeof(struct in_addr));
                     break;
 
                 default:
-                    fatalf("Unknown Wccp2 assignment method\n");
+                    throw TextException("unknown Wccp2 assignment method", Here());
                 }
 
-                /* Update the cache list */
-                cache_list_ptr->cache_ip = cache_address;
-
-                cache_list_ptr->next = (wccp2_cache_list_t*) xcalloc(1, sizeof(struct wccp2_cache_list_t));
-
-                cache_list_ptr = cache_list_ptr->next;
-
-                cache_list_ptr->next = NULL;
-
-                debugs (80, 5,  "checking cache list: (" << std::hex << cache_address.s_addr << ":" <<  router_list_ptr->local_ip.s_addr << ")");
+                debugs (80, 5,  "checking cache list: (" << AsHex(tmpEntry->cache_ip.s_addr) << ":" <<  router_list_ptr->local_ip.s_addr << ")");
 
                 /* Check to see if it's the master, or us */
-                found = found || (cache_address.s_addr == router_list_ptr->local_ip.s_addr);
+                found = found || (tmpEntry->cache_ip.s_addr == router_list_ptr->local_ip.s_addr);
 
-                if (cache_address.s_addr < router_list_ptr->local_ip.s_addr) {
-                    service_list_ptr->lowest_ip = 0;
-                }
+                /* Update the cache list (will be sorted later, order does not matter) */
+                tmpEntry->next = cache_list_ptr.release();
+                cache_list_ptr.swap(tmpEntry);
+
+                new_lowest_ip = (cache_list_ptr->cache_ip.s_addr < router_list_ptr->local_ip.s_addr);
             }
+
         } else {
             debugs(80, 5, "Adding ourselves as the only cache");
 
             /* Update the cache list */
+            cache_list_ptr.reset(new wccp2_cache_list_t);
             cache_list_ptr->cache_ip = router_list_ptr->local_ip;
 
-            cache_list_ptr->next = (wccp2_cache_list_t*) xcalloc(1, sizeof(struct wccp2_cache_list_t));
-            cache_list_ptr = cache_list_ptr->next;
-            cache_list_ptr->next = NULL;
-
-            service_list_ptr->lowest_ip = 1;
+            // new_lowest_ip = false;
             found = true;
             num_caches = 1;
         }
+
+        debugs(80, 5, "Cleaning out cache list");
+        // XXX: cache_list_head is not a pointer. We memove() new data over to it instead.
+        delete router_list_ptr->cache_list_head.next;
+
+        // update global state for this router with new cache list
+        memmove(&router_list_ptr->cache_list_head, cache_list_ptr.get(), sizeof(cache_list_ptr));
+        cache_list_ptr->next = nullptr; // router_list_ptr owns the 'next' list now, let the head be delete'd
+        router_list_ptr->num_caches = htonl(num_caches);
+        service_list_ptr->lowest_ip = (new_lowest_ip ? 0 : 1);
 
         wccp2SortCacheList(&router_list_ptr->cache_list_head);
 
