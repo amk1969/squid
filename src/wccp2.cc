@@ -17,6 +17,7 @@
 #include "comm/Connection.h"
 #include "comm/Loops.h"
 #include "ConfigParser.h"
+#include "Debug.h"
 #include "event.h"
 #include "ip/Address.h"
 #include "md5.h"
@@ -1509,7 +1510,7 @@ wccp2HandleUdp(int sock, void *)
                     throw TextException("unknown Wccp2 assignment method", Here());
                 }
 
-                debugs (80, 5,  "checking cache list: (" << AsHex(tmpEntry->cache_ip.s_addr) << ":" <<  router_list_ptr->local_ip.s_addr << ")");
+                debugs (80, 5,  "checking cache list: (" << asHex(tmpEntry->cache_ip.s_addr) << ":" <<  router_list_ptr->local_ip.s_addr << ")");
 
                 /* Check to see if it's the master, or us */
                 found = found || (tmpEntry->cache_ip.s_addr == router_list_ptr->local_ip.s_addr);
