@@ -419,6 +419,8 @@ struct wccp2_cache_list_t {
         delete next;
     }
 
+    // no copying of any kind (for simplicity sake)
+    wccp2_cache_list_t(wccp2_cache_list_t &&) = delete;
     struct in_addr cache_ip;
 
     int weight = 0;
