@@ -287,18 +287,23 @@ struct wccp2_router_id_element_t {
 struct wccp2_capability_info_header_t {
     uint16_t capability_info_type;
     uint16_t capability_info_length;
-    /* dynamic length capabilities list */
 };
 
 static struct wccp2_capability_info_header_t wccp2_capability_info_header;
 
+/// the Type/Value portion of the wccp2_capability_element_t TLV
+struct wccp2_capability_element_header_t {
+    uint16_t capability_type;
+    uint16_t capability_length;
+};
+
 /** \interface WCCPv2_Protocol
  * 5.7.5 Capability Element
  */
-struct wccp2_capability_element_t {
-    uint16_t capability_type;
-    uint16_t capability_length;
-    uint32_t capability_value; // All capabilities have length of 4
+struct wccp2_capability_element_t: public wccp2_capability_element_header_t {
+    /// convenience getter for the whole header and nothing but the header
+    wccp2_capability_element_header_t *header() { return this; }
+    uint32_t capability_value;
 };
 static struct wccp2_capability_element_t wccp2_capability_element;
 
@@ -1143,17 +1148,17 @@ CheckSectionLength(const void *sectionStart, const size_t sectionLength, const v
 
 /// Checks that the area contains at least dataLength bytes after the header.
 /// The size of the field header itself is not included in dataLength.
-/// Struct FieldHeader does not contain the data itself for router_capability_header,
-/// but it does in case of router_capability_element, so specified as headerLength.
 /// \returns the total field size -- the field header and field data combined
 template<class FieldHeader>
 static size_t
-CheckFieldDataLength(const FieldHeader *header, const size_t headerLength, const size_t dataLength, const void *areaStart, const size_t areaSize, const char *error)
+CheckFieldDataLength(const FieldHeader *header, const size_t dataLength, const void *areaStart, const size_t areaSize, const char *error)
 {
     assert(header);
-    const auto dataStart = reinterpret_cast<const char*>(header) + headerLength;
+    // TODO: Refactor WCCP structs to (re)use a named type for all TLV headers.
+    static_assert(sizeof(*header) == sizeof(uint16_t)*2, "header is a WCCP type+length structure");
+    const auto dataStart = reinterpret_cast<const char*>(header) + sizeof(*header);
     CheckSectionLength(dataStart, dataLength, areaStart, areaSize, error);
-    return headerLength + dataLength; // no overflow after CheckSectionLength()
+    return sizeof(*header) + dataLength; // no overflow after CheckSectionLength()
 }
 
 /// Positions the given field at a given start within a given packet area.
@@ -1240,7 +1245,7 @@ wccp2HandleUdp(int sock, void *)
             char *data = wccp2_i_see_you.data;
 
             const auto itemHeader = reinterpret_cast<const wccp2_item_header_t*>(&data[offset]);
-            const auto itemSize = CheckFieldDataLength(itemHeader, sizeof(*itemHeader), ntohs(itemHeader->length),
+            const auto itemSize = CheckFieldDataLength(itemHeader, ntohs(itemHeader->length),
                                   data, data_length, "truncated record");
             debugs(80, 7, "Offset: " << offset << " Item type: " << ntohs(itemHeader->type) << " size: " << itemSize << ".");
             // XXX: Check "The specified length must be a multiple of 4 octets"
@@ -1277,8 +1282,7 @@ wccp2HandleUdp(int sock, void *)
                 SetField(router_capability_header, itemHeader, itemHeader, itemSize,
                          "router_capability definition truncated");
 
-                CheckFieldDataLength(router_capability_header, sizeof(*router_capability_header),
-                                     ntohs(router_capability_header->capability_info_length),
+                CheckFieldDataLength(router_capability_header, ntohs(router_capability_header->capability_info_length),
                                      itemHeader, itemSize, "capability info truncated");
                 router_capability_data_start = reinterpret_cast<char*>(router_capability_header) +
                                                sizeof(*router_capability_header);
@@ -1369,7 +1373,7 @@ wccp2HandleUdp(int sock, void *)
                          router_capability_data_start, router_capability_data_length,
                          "capability element header truncated");
                 const auto elementSize = CheckFieldDataLength(
-                                             router_capability_element, 4, // All elements have 4 bytes header and 4 bytes value
+                                             router_capability_element->header(),
                                              ntohs(router_capability_element->capability_length),
                                              router_capability_data_start, router_capability_data_length,
                                              "capability element truncated");
