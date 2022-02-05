@@ -1402,6 +1402,15 @@ wccp2HandleUdp(int sock, void *)
 
                 case WCCP2_CAPABILITY_RETURN_METHOD:
 
+                    // XXX: Here and elsewhere, we do not check that
+                    // capability_value actually fits inside the area limited by
+                    // router_capability_element->capability_length! For example, we
+                    // might receive a bogus capability_length value of 1, which is
+                    // smaller than sizeof(capability_value). We do check that
+                    // router_capability_element fits into the area limited by
+                    // router_capability_data_length a whole, but that check is too
+                    // weak because there may be other elements in that area.
+
                     if (!(ntohl(router_capability_element->capability_value) & Config.Wccp2.return_method)) {
                         debugs(80, DBG_IMPORTANT, "ERROR: wccp2HandleUdp: fatal error - A WCCP router has specified a different return method " << ntohl(router_capability_element->capability_value) << ", expected " << Config.Wccp2.return_method);
                         wccp2ConnectionClose();
