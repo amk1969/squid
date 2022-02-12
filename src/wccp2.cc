@@ -1849,7 +1849,7 @@ wccp2AssignBuckets(void *)
                 if (num_caches) {
                     int cache;
 
-                    for (cache = 0, cache_list_ptr = &router_list_ptr->cache_list_head; cache_list_ptr->next; cache_list_ptr = cache_list_ptr->next, ++cache) {
+                    for (cache = 0, cache_list_ptr = &router_list_ptr->cache_list_head; cache_list_ptr; cache_list_ptr = cache_list_ptr->next, ++cache) {
                         /* add caches */
 
                         cache_address = (struct in_addr *) &wccp_packet[offset];
